@@ -14,7 +14,7 @@
 -define(CLUSTER_NAME, ra_faxe).
 %% API
 -export([init/1, apply/3, state_enter/2]).
--export([start/0, restart/0, started/3, stopped/3, get_pid/1, join/0, join/1]).
+-export([start/0, restart/0, started/3, stopped/3, get_pid/1, join/0, join/1, get_flows/1]).
 
 -record(state, {
   ring,
@@ -45,11 +45,13 @@ get_pid(Key) ->
   lager:notice("Leader from leaderboard: ~p",[Leader]),
   ra:process_command(Leader, {get_pid, Key}).
 
-get_node_keys(ServerId, Node) ->
-  ra:process_command(ServerId, {get_node_keys, Node}).
+get_flows(Node) ->
+  Leader = ra_leaderboard:lookup_leader(?CLUSTER_NAME),
+  ra:process_command(Leader, {get_flows, Node}).
 
 start( ) ->
   %% the initial cluster members
+  [net_adm:ping(N) || N <- [ra1@ubuntu, ra2@ubuntu, ra3@ubuntu, ra4@ubuntu, ra5@ubuntu]],
   Nodes = [node()|nodes()],
   Members = [{?CLUSTER_NAME, N} || N <- Nodes],
   %% an arbitrary cluster name
@@ -75,7 +77,7 @@ apply(_Meta, {started, Key, Node, Pid}, State = #state{flows = Flows}) ->
   NewFlows = Flows#{Key => Pid},
   lager:notice("New Flows: ~p",[NewFlows]),
   {State#state{flows = NewFlows}, ok};
-apply(_Meta, {stopped, Key, Node, _Pid}, State = #state{flows = Flows}) ->
+apply(_Meta, {stopped, Key, Node, Pid}, State = #state{flows = Flows}) ->
   lager:notice("[~p] STOPPED graph ~p on node ~p" ,[?MODULE, Key, Node]),
   NewFlows = maps:without([Key], Flows),
   lager:notice("New FLows: ~p",[NewFlows]),
@@ -84,8 +86,8 @@ apply(Meta, {get_pid, Key}, State = #state{flows = Flows}) ->
   lager:notice("Metadata: ~p~n",[Meta]),
   lager:notice("get_pid, ~p : ~p",[Key, maps:get(Key, Flows, undefined)]),
   {State, maps:get(Key, Flows, undefined)};
-apply(_Meta, {get_keys, Node}, State = #state{flows = Flows}) ->
-  F = fun(_K, {_Pid, KNode}) -> KNode == Node end,
+apply(_Meta, {get_flows, Node}, State = #state{flows = Flows}) ->
+  F = fun(_K, Pid) -> node(Pid) == Node end,
   Res = maps:filter(F, Flows),
   {State, Res};
 

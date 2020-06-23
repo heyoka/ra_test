@@ -26,7 +26,7 @@ start_link(FlowId) ->
   gen_server:start_link(?MODULE, [FlowId], []).
 
 init([FlowId]) ->
-  lager:info("start flow with id: ~p", [FlowId]),
+  lager:info("[~p] start flow with id: ~p", [?MODULE, FlowId]),
   {ok, #graph_state{id = FlowId}}.
 
 handle_call(_Request, _From, State = #graph_state{}) ->
