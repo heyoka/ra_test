@@ -71,12 +71,12 @@ init(_Config) ->
 
 
 apply(_Meta, {started, Key, Node, Pid}, State = #state{flows = Flows}) ->
-  lager:notice("STARTED graph ~p on node ~p" ,[Key, Node]),
+  lager:notice("[~p] STARTED graph ~p on node ~p" ,[?MODULE, Key, Node]),
   NewFlows = Flows#{Key => Pid},
   lager:notice("New Flows: ~p",[NewFlows]),
   {State#state{flows = NewFlows}, ok};
 apply(_Meta, {stopped, Key, Node, _Pid}, State = #state{flows = Flows}) ->
-  lager:notice("STOPPED graph ~p on node ~p" ,[Key, Node]),
+  lager:notice("[~p] STOPPED graph ~p on node ~p" ,[?MODULE, Key, Node]),
   NewFlows = maps:without([Key], Flows),
   lager:notice("New FLows: ~p",[NewFlows]),
   {State#state{flows = NewFlows}, ok};
@@ -95,7 +95,7 @@ apply(_Meta, {nodeup, Node}, State=#state{ring = Ring, flows = Flows}) ->
 %%  lager:warning("hash_ring-nodes: ~p",[hash_ring:get_nodes(Ring)]),
     case maps:is_key(Node, hash_ring:get_nodes(Ring)) of
       true ->
-        lager:warning("nodeup but already exists ! ~p",[Node]),
+        lager:warning("nodeup but already exists in  ring ! ~p",[Node]),
         {State, ok};% do nothing
       false ->
         lager:notice("nodeup:add_node ~p",[hash_ring_node:make(Node)]),
@@ -114,8 +114,9 @@ apply(_Meta, {nodedown, Node}, State=#state{ring = Ring, flows = Flows}) ->
   {State#state{ring = NewRing}, ok, Effects}.
 
 state_enter(leader, State=#state{ring = Ring}) ->
-  lager:notice("i am leader now: ~p",[node()]),
+  lager:alert("i am leader now: ~p",[node()]),
   %% re-request monitors for all nodes
+  lager:warning("[~p] monitoring these nodes: ~p", [?MODULE, nodes()]),
   [{monitor, node, N} || N <- nodes()];%++[{call_mod, graph_handler, ring_changed, [Ring]}];
 state_enter(NewState, _) ->
   lager:notice("entered state: ~p for: ~p", [NewState, node()]),

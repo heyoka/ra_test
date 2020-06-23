@@ -43,15 +43,15 @@ init([]) ->
 
 handle_call({start_local, Key, Opts}, _From, State = #graph_handler_state{}) ->
   Res  = faxe_start_task(Key, Opts),
-  lager:notice("started task locally as : ~p : ~p",[{Key, node()}, Res]),
+  lager:notice("[~p] started task locally as : ~p : ~p",[?MODULE, {Key, node()}, Res]),
   {reply, Res, State};
 handle_call({start_flow, Key, Opts}, _From, State = #graph_handler_state{ring = Ring, ra_leader = _Leader}) ->
-  lager:notice("START_FLOW: on node: ~p",[preflist(Key, Ring, 1)]),
+  lager:notice("[~p] START_FLOW: on node: ~p",[?MODULE, preflist(Key, Ring, 1)]),
   Node = find_node(Key, Ring),
   Res =
   case node() == Node of
     true ->
-      lager:notice("start task locally on node: ~p",[Node]),
+      lager:notice("[~p] start task locally on node: ~p",[?MODULE, Node]),
       case faxe_start_task(Key, Opts) of
         {ok, Pid} ->
           ra_kv:started(Key, Node, Pid),
@@ -70,8 +70,8 @@ handle_call({start_flow, Key, Opts}, _From, State = #graph_handler_state{ring = 
   {reply, Res, State};
 handle_call({stop_flow, Key}, _From, State = #graph_handler_state{ra_leader = _Leader}) ->
   case ra_kv:get_pid(Key) of
-    {ok, undefined} -> ok;
-    {ok, Pid, _SrvId} when is_pid(Pid) ->
+    {ok, undefined, _Leader} -> ok;
+    {ok, Pid, _Leader} when is_pid(Pid) ->
       faxe_stop_task(Pid),
       ra_kv:stopped(Key, node(Pid), Pid)
   end,
@@ -81,16 +81,17 @@ handle_cast(_Request, State = #graph_handler_state{}) ->
   {noreply, State}.
 
 handle_info({ring_changed, NewRing}, State = #graph_handler_state{}) ->
-  lager:notice("ring_changed!!, nodes: ~p", [hash_ring:get_nodes(NewRing)]),
+  lager:notice("[~p] ring_changed!!, nodes: ~p", [?MODULE, hash_ring:get_nodes(NewRing)]),
   {noreply, State#graph_handler_state{ring = NewRing}};
 handle_info({check_handoff, nodedown, Node, KeyMap}, State = #graph_handler_state{ring = Ring, ra_leader = _Leader}) ->
-  lager:warning("node_down: ~p, relocate tasks:~p",[Node, KeyMap]),
+  lager:warning("[~p] node_down: ~p, relocate tasks:~p",[?MODULE, Node, KeyMap]),
   %% check Tasks on node Node and relocate them to their new node
   F =
     fun(K, _Pid) ->
       NewNode = find_node(K, Ring),
-      lager:notice("new node for handoff key: ~p : ~p",[K, NewNode]),
+      lager:notice("[~p] new node for handoff key: ~p : ~p",[?MODULE, K, NewNode]),
       {ok, NewPid} = gen_server:call({?SERVER, NewNode}, {start_local, K, []}),
+      lager:alert("[~p] ~p is now on node ~p after nodedown.",[?MODULE, K, NewNode]),
       ra_kv:started(K, NewNode, NewPid),
       {K, NewNode, NewPid}
     end
@@ -98,17 +99,17 @@ handle_info({check_handoff, nodedown, Node, KeyMap}, State = #graph_handler_stat
   maps:map(F, KeyMap),
   {noreply, State#graph_handler_state{}};
 handle_info({check_handoff, nodeup, Node, KeyMap}, State = #graph_handler_state{ring = Ring}) ->
-  lager:warning("node_up: ~p, check_handoff:~p",[Node, KeyMap]),
+  lager:warning("[~p] node_up: ~p, check_handoff:~p",[?MODULE, Node, KeyMap]),
   %% ring grows and we have to relocate some tasks
   F =
     fun(K, Pid) ->
       NewNode = find_node(K, Ring),
       case NewNode /= Node of
         true ->
-          lager:notice("Key: ~p currently on node ~p New Node would be: ~p",[Node, NewNode]),
+          lager:notice("[~p] Key: ~p currently on node ~p New Node would be: ~p",[?MODULE, Node, NewNode]),
 
           start_handoff(K, Pid, NewNode, State);
-        false -> ok %% do nothing
+        false -> lager:warning("[~p] NewNode(~p) /= Node(~p) in check_handoff nodeup",[?MODULE, NewNode, Node]),ok %% do nothing
       end,
 %%      {ok, NewPid} = gen_server:call({?SERVER, NewNode}, {start_local, K, []}),
       {K, NewNode, Pid}
@@ -153,5 +154,6 @@ start_handoff(Key, FromPid, ToNode, State) ->
 %%  OldNode = node(FromPid),
   lager:notice("start handoff for ~p, ~p, ~p", [Key, FromPid, ToNode]),
   {reply, {ok, _Pid}, _State} = handle_call({start_flow, Key, []}, self(), State),
+  lager:alert("~p is now on node ~p after handoff.",[Key, ToNode]),
   handle_call({stop_flow, FromPid}, self(), State).
 %%  handoff_handler:handoff(Key, FromPid, ToNode).
