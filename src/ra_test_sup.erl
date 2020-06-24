@@ -32,6 +32,9 @@ start_link() ->
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
     Ps = [
+        {ra_ets,
+            {ra_ets, start_link, []},
+            permanent, 5000, worker, []},
         {graph_handler,
             {graph_handler, start_link, []},
             permanent, 5000, worker, []},
