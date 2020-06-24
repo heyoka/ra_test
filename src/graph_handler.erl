@@ -16,6 +16,8 @@
 
 -define(SERVER, ?MODULE).
 
+-define(RA_MACHINE, ra_callback).
+
 -record(cluster_mode, {
   singleton = true,
   replicas = 0
@@ -58,11 +60,11 @@ handle_call({start_flow, Key, Opts}, _From, State = #graph_handler_state{ring = 
   {reply, Res, State};
 handle_call({stop_flow, Key}, _From, State = #graph_handler_state{ra_leader = _Leader}) ->
   %% check for pids of key and stop all of them
-  case ra_kv:get_pid(Key) of
+  case ?RA_MACHINE:get_pid(Key) of
     {ok, undefined, _Leader} -> ok;
     {ok, Pid, _Leader} when is_pid(Pid) ->
       faxe_stop_task(Pid),
-      ra_kv:stopped(Key, node(Pid), Pid)
+      ?RA_MACHINE:stopped(Key, node(Pid), Pid)
   end,
   {reply, ok, State}.
 
@@ -77,13 +79,15 @@ handle_info({check_handoff, nodedown, Node, KeyMap}, State = #graph_handler_stat
   lager:warning("[~p] node_down: ~p, relocate tasks:~p",[?MODULE, Node, KeyMap]),
   %% check Tasks on node Node and relocate them to their new node
   F =
-    fun(K, _Pid) ->
+    fun(K, Pid) ->
       NewNode = find_node(K, Ring),
       lager:notice("[~p] new node for handoff key: ~p : ~p",[?MODULE, K, NewNode]),
-      {ok, NewPid} = start_local(K, Ring, #cluster_mode{}),
+      ?RA_MACHINE:stopped(K, Node, Pid),
+      {ok, NewPid} = start_local(K, Ring, 1),
+
 %%      {ok, NewPid} = gen_server:call({?SERVER, NewNode}, {start_local, K, []}),
       lager:alert("[~p] ~p is now on node ~p after nodedown.",[?MODULE, K, NewNode]),
-%%      ra_kv:started(K, NewNode, NewPid),
+%%      ?RA_MACHINE:started(K, NewNode, NewPid),
       {K, NewNode, NewPid}
     end
   ,
@@ -145,7 +149,7 @@ do_start(Key, Node) ->
       false -> gen_server:call({?SERVER, Node}, {start_local, Key, []})
     end,
   case Res of
-    {ok, Pid} -> ra_kv:started(Key, Node, Pid), {ok, Pid};
+    {ok, Pid} -> ?RA_MACHINE:started(Key, Node, Pid), {ok, Pid};
     E -> E
   end.
 
@@ -162,6 +166,6 @@ start_handoff(Key, FromPid, ToNode) ->
     {ok, Pid} ->
       lager:alert("[~p] ~p is now on node ~p after handoff.",[?MODULE, Key, ToNode]),
       faxe_stop_task(FromPid);
-      %ra_kv:stopped(Key, node(FromPid), FromPid);
+      %?RA_MACHINE:stopped(Key, node(FromPid), FromPid);
     E -> E
   end.

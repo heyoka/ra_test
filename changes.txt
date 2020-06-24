@@ -1,0 +1,14 @@
+version 1:
+# member nodes are initially known, but failed nodes can come back with the ra_kv:restart function
+# singeleton processes only
+# ra_machine callback handles (changes to) the hashring and send the ring to its brother graph-handler process
+# ra_machine callback keeps track of started/stopped processes
+# handoff is essentially implemented as takeover (no real handoff takes place/ not a problem for now)
+
+version 2:
+# definable number of replicas will be started
+# ra_machine callback does not handle the hashring, but just the node up/down messages / is this a good idea ?
+# ra_machine callback keeps track of started/stopped processes
+# when will nodes be added ? have initial members and join/leave functionality
+# real handoff should be implemented ?
+# use ra:leader_query function for getting all or parts of the info about processes running in the cluster
