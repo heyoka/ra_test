@@ -14,7 +14,7 @@
 -define(CLUSTER_NAME, ra_faxe).
 %% API
 -export([init/1, apply/3, state_enter/2]).
--export([start/0, restart/0, started/3, stopped/3, get_pid/1, join/0, join/1, get_flows/1, get_procs/1]).
+-export([start/0, restart/0, started/3, stopped/3, get_pid/1, join/0, join/1, get_flows/1, get_procs/1, rejoin/1]).
 
 -record(state, {
   ring,
@@ -25,11 +25,15 @@
 join() ->
   join(ra1@ubuntu).
 join(To) ->
-  ra:add_member({?CLUSTER_NAME, node()}, {?CLUSTER_NAME, To}),
+  pong = net_adm:ping(To),
+  ra:add_member({?CLUSTER_NAME, To}, {?CLUSTER_NAME, node()}),
   ra:start_server(?CLUSTER_NAME, {?CLUSTER_NAME, node()}, {module, ?MODULE, #{}}, []).
 
+rejoin(To) ->
+  pong = net_adm:ping(To),
+  restart().
+
 restart() ->
-%%  ra:start_server(bla),
   ra:restart_server({?CLUSTER_NAME, node()}).
 
 started(Key, Node, Pid) ->
@@ -64,9 +68,10 @@ get_flows(Node) ->
 
 start( ) ->
   %% the initial cluster members
-  [net_adm:ping(N) || N <- [ra1@alex, ra2@alex, ra3@alex, ra4@ubuntu, ra5@ubuntu]],
-  Nodes = [node()|nodes()],
-  Members = [{?CLUSTER_NAME, N} || N <- Nodes],
+%%  [net_adm:ping(N) || N <- [ra1@alex, ra2@alex, ra3@alex, ra4@ubuntu, ra5@ubuntu]],
+%%  Nodes = [node()|nodes()],
+%%  Members = [{?CLUSTER_NAME, N} || N <- Nodes],
+  Members = [{?CLUSTER_NAME, node()}],
   %% an arbitrary cluster name
 %%  ClusterName = <<"ra_faxe">>,
   %% the config passed to `init/1`, must be a `map`
@@ -78,6 +83,7 @@ start( ) ->
 
 
 init(_Config) ->
+  lager:info("ra_callback init"),
   Nodes = [node()|nodes()],
   HRNodes = hash_ring:list_to_nodes(Nodes),
   Ring = hash_ring:make(HRNodes, [{module, hash_ring_dynamic}, {virtual_node_count, 64}]),
@@ -117,7 +123,8 @@ apply(_Meta, {nodeup, Node}, State=#state{ring = Ring, procs = Flows}) ->
         NewRing = hash_ring:add_node(hash_ring_node:make(Node), Ring),
         Effects = [
           {mod_call, ets, insert, [ra_ring, {ring, NewRing}]},
-          {send_msg, graph_handler, {check_handoff, nodeup, Node, Flows}}],
+          {send_msg, graph_handler, {check_handoff, nodeup, Node, Flows}},
+          {monitor, node, Node}],
         {State#state{ring = NewRing}, ok, Effects}
     end;
 apply(_Meta, {nodedown, Node}, State=#state{ring = Ring, procs = Flows}) ->
