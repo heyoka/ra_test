@@ -10,15 +10,19 @@
 -behaviour(ra_machine).
 -author("heyoka").
 
+-include("ra.hrl").
 
 -define(CLUSTER_NAME, ra_faxe).
 %% API
 -export([init/1, apply/3, state_enter/2]).
--export([start/0, restart/0, started/3, stopped/3, get_pid/1, join/0, join/1, get_flows/1, get_procs/1, rejoin/1]).
+-export([start/0, restart/0, started/3, stopped/3, get_pid/1,
+  join/0, join/1, rejoin/1, add_ring_member/0, leave/0,
+  get_flows/1, get_procs/1,  get_ring_nodes/0]).
 
 -record(state, {
   ring,
-  procs = #{}
+  procs = #{},
+  known_ring_nodes
 }).
 
 
@@ -27,23 +31,36 @@ join() ->
 join(To) ->
   pong = net_adm:ping(To),
   ra:add_member({?CLUSTER_NAME, To}, {?CLUSTER_NAME, node()}),
-  ra:start_server(?CLUSTER_NAME, {?CLUSTER_NAME, node()}, {module, ?MODULE, #{}}, []).
+  ra:start_server(?CLUSTER_NAME, {?CLUSTER_NAME, node()}, {module, ?MODULE, #{}}, [{?CLUSTER_NAME, To}])
+  .
 
 rejoin(To) ->
   pong = net_adm:ping(To),
   restart().
 
+leave() ->
+  process_command({leave, node()}).
+
 restart() ->
   ra:restart_server({?CLUSTER_NAME, node()}).
 
 started(Key, Node, Pid) ->
-  ServerId = ra_leaderboard:lookup_leader(?CLUSTER_NAME),
-  ra:process_command(ServerId, {started, Key, Node, Pid}).
+  process_command({started, Key, Node, Pid}).
 
 stopped( Key, Node, Pid) ->
-  ServerId = ra_leaderboard:lookup_leader(?CLUSTER_NAME),
-  ra:process_command(ServerId, {stopped, Key, Node, Pid}).
+  process_command({stopped, Key, Node, Pid}).
 
+add_ring_member() ->
+  process_command({add_ring_member, node()}).
+
+%% process a command on the leader node
+-spec process_command(any()) ->
+  {ok, Reply :: term(), Leader :: ra_server_id()} |
+  {error, term()} |
+  {timeout, ra_server_id()}.
+process_command(Command) ->
+  Leader = ra_leaderboard:lookup_leader(?CLUSTER_NAME),
+  ra:process_command(Leader, Command).
 
 get_procs(Key) ->
   Query =
@@ -66,7 +83,11 @@ get_flows(Node) ->
   Leader = ra_leaderboard:lookup_leader(?CLUSTER_NAME),
   ra:process_command(Leader, {get_flows, Node}).
 
-start( ) ->
+get_ring_nodes() ->
+  Leader = ra_leaderboard:lookup_leader(?CLUSTER_NAME),
+  ra:process_command(Leader, get_ring_nodes).
+
+start() ->
   %% the initial cluster members
 %%  [net_adm:ping(N) || N <- [ra1@alex, ra2@alex, ra3@alex, ra4@ubuntu, ra5@ubuntu]],
 %%  Nodes = [node()|nodes()],
@@ -109,11 +130,27 @@ apply(_Meta, {get_flows, Node}, State = #state{procs = Flows}) ->
   F = fun(_K, Pid) -> node(Pid) == Node end,
   Res = maps:filter(F, Flows),
   {State, Res};
+apply(_Meta, get_ring_nodes, State = #state{ring = Ring}) ->
+  Res = hash_ring:get_node_list(Ring),
+  {State, Res};
+
+apply(_Meta, {add_ring_member, Node}, State=#state{ring = _Ring}) ->
+%%  lager:info("apply add_ring_member: ~p", [Node]),
+%%  lager:info("apply add_ring_member META: ~p", [Meta]),
+  {State, ok, [{demonitor, node, Node}, {monitor, node, Node}]};
+
+%% @todo start handoff handler via supervisor, a command should be sent from the handler, when it is done
+apply(_Meta, {leave, Node}, State=#state{ring = Ring}) ->
+  NewRing = hash_ring:remove_node(Node, Ring),
+  {State, ok, [
+    {mod_call, ets, insert, [ra_ring, {handoff_ring, NewRing}]},
+    {send_msg, graph_handler, {prepare_handoff, node_leave, Node}}
+  ]};
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 apply(_Meta, {nodeup, Node}, State=#state{ring = Ring, procs = Flows}) ->
-%%  lager:warning("hash_ring-nodes: ~p",[hash_ring:get_nodes(Ring)]),
+    lager:warning("hash_ring-nodes before nodeup: ~p",[hash_ring:get_nodes(Ring)]),
     case maps:is_key(Node, hash_ring:get_nodes(Ring)) of
       true ->
         lager:warning("nodeup but already exists in  ring ! ~p",[Node]),
@@ -123,11 +160,14 @@ apply(_Meta, {nodeup, Node}, State=#state{ring = Ring, procs = Flows}) ->
         NewRing = hash_ring:add_node(hash_ring_node:make(Node), Ring),
         Effects = [
           {mod_call, ets, insert, [ra_ring, {ring, NewRing}]},
-          {send_msg, graph_handler, {check_handoff, nodeup, Node, Flows}},
-          {monitor, node, Node}],
+          {send_msg, graph_handler, {check_handoff, nodeup, Node, Flows}}]
+          ,
+%%          {monitor, node, Node}],
+        lager:warning("hash_ring-nodes after nodeup: ~p",[hash_ring:get_nodes(NewRing)]),
         {State#state{ring = NewRing}, ok, Effects}
     end;
 apply(_Meta, {nodedown, Node}, State=#state{ring = Ring, procs = Flows}) ->
+  lager:warning("hash_ring-nodes before nodedown: ~p",[hash_ring:get_nodes(Ring)]),
   NewRing = hash_ring:remove_node(Node, Ring),
   lager:warning("nodedown: ~p",[Node]),
   F = fun(K, KeyList, Acc) ->
@@ -141,13 +181,16 @@ apply(_Meta, {nodedown, Node}, State=#state{ring = Ring, procs = Flows}) ->
   Effects = [
     {mod_call, ets, insert, [ra_ring, {ring, NewRing}]},
     {send_msg, graph_handler, {check_handoff, nodedown, Node, NodeKeys}}],
+  lager:warning("hash_ring-nodes after nodedown: ~p",[hash_ring:get_nodes(NewRing)]),
   {State#state{ring = NewRing}, ok, Effects}.
 
-state_enter(leader, _State=#state{}) ->
+
+state_enter(leader, _State=#state{ring = Ring}) ->
   lager:alert("i am leader now: ~p",[node()]),
-  %% re-request monitors for all nodes
-  lager:warning("[~p] monitoring these nodes: ~p", [?MODULE, nodes()]),
-  [{monitor, node, N} || N <- nodes()];%++[{call_mod, graph_handler, ring_changed, [Ring]}];
+  %% re-request monitors for all ring member-nodes
+  RingNodes = maps:keys(hash_ring:get_nodes(Ring)),
+  lager:warning("[~p] monitoring these nodes: ~p", [?MODULE, RingNodes--[node()]]),
+  [{monitor, node, N} || N <- (RingNodes--[node()])];%++[{call_mod, graph_handler, ring_changed, [Ring]}];
 state_enter(NewState, _) ->
   lager:notice("entered state: ~p for: ~p", [NewState, node()]),
   [].
@@ -167,21 +210,19 @@ add_process(Key, Pid, Processes) when is_map(Processes) ->
       end
   end.
 
-remove_process(Key, Pid, Processes) when is_map(Processes) ->
-  case maps:get(Key, Processes, nil) of
-    nil -> Processes;
-    KeyList ->
-      case KeyList of
-        [] ->
-          lager:notice("KeyMap after removal: ~p",[maps:without([Key], Processes)]),
-          maps:without([Key], Processes);
-        [Pid] ->
-          lager:notice("KeyMap after removal: ~p",[maps:without([Key], Processes)]),
-          maps:without([Key], Processes);
-        _L -> NewKeyList = lists:filter(fun(P) -> P /= Pid end, KeyList),
-          lager:notice("KeyList after removal: ~p",[NewKeyList]),
-          Processes#{Key => NewKeyList}
-      end
+remove_process(Key, _Pid, Processes) when not is_map_key(Key, Processes) ->
+  Processes;
+remove_process(Key, Pid, Processes#{Key := KeyList}) when is_map(Processes) ->
+  case KeyList of
+    [] ->
+      lager:notice("KeyMap after removal: ~p", [maps:without([Key], Processes)]),
+      maps:without([Key], Processes);
+    [Pid] ->
+      lager:notice("KeyMap after removal: ~p", [maps:without([Key], Processes)]),
+      maps:without([Key], Processes);
+    _L -> NewKeyList = lists:filter(fun(P) -> P /= Pid end, KeyList),
+      lager:notice("KeyList after removal: ~p", [NewKeyList]),
+      Processes#{Key => NewKeyList}
   end.
 
 
