@@ -10,7 +10,7 @@
 -behaviour(ra_machine).
 -author("heyoka").
 
--include("ra.hrl").
+%%-include("ra.hrl").
 
 -define(CLUSTER_NAME, ra_faxe).
 %% API
@@ -54,10 +54,10 @@ add_ring_member() ->
   process_command({add_ring_member, node()}).
 
 %% process a command on the leader node
--spec process_command(any()) ->
-  {ok, Reply :: term(), Leader :: ra_server_id()} |
-  {error, term()} |
-  {timeout, ra_server_id()}.
+%%-spec process_command(any()) ->
+%%  {ok, Reply :: term(), Leader :: ra_server_id()} |
+%%  {error, term()} |
+%%  {timeout, ra_server_id()}.
 process_command(Command) ->
   Leader = ra_leaderboard:lookup_leader(?CLUSTER_NAME),
   ra:process_command(Leader, Command).
@@ -212,7 +212,8 @@ add_process(Key, Pid, Processes) when is_map(Processes) ->
 
 remove_process(Key, _Pid, Processes) when not is_map_key(Key, Processes) ->
   Processes;
-remove_process(Key, Pid, Processes#{Key := KeyList}) when is_map(Processes) ->
+remove_process(Key, Pid, Processes) when is_map(Processes) ->
+  KeyList = maps:get(Key, Processes),
   case KeyList of
     [] ->
       lager:notice("KeyMap after removal: ~p", [maps:without([Key], Processes)]),
